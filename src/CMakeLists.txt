@@ -38,7 +38,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
   PRIVATE
   glfw
   ${GLAD_LIBRARY}
-  glm)
+  glm
+  imgui)
 
 install(TARGETS ${CMAKE_PROJECT_NAME}
 EXPORT ${CMAKE_PROJECT_NAME}-targets

@@ -50,3 +50,27 @@ CPMAddPackage(
   GITHUB_REPOSITORY TheLartians/GroupSourcesByFolder.cmake
   VERSION 1.0
 )
+
+CPMAddPackage(
+  NAME imgui
+  GITHUB_REPOSITORY ocornut/imgui
+  GIT_TAG v1.91.8
+  DOWNLOAD_ONLY
+)
+
+if(NOT TARGET imgui)
+  add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+  )
+  target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR})
+  target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR}/backends)
+  target_link_libraries(imgui PUBLIC glfw ${GLAD_LIBRARY})
+  target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD2)
+  make_folder("imgui" imgui)
+endif()
