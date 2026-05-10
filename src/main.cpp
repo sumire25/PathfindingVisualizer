@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <cmath>
+#include <vector>
 
 #include "Geometry.h"
 #include "Triangulation.h"
@@ -30,18 +31,20 @@ const char* fragmentShaderSource = R"glsl(
 #version 330 core
 in float vState;
 out vec4 FragColor;
-uniform int uRenderMode; // 0 = Points, 1 = Lines
+uniform int uRenderMode; // 0 = Points, 1 = Lines, 2 = Path Line
 
 void main() {
     if (uRenderMode == 1) {
-        FragColor = vec4(0.3f, 0.3f, 0.4f, 0.5f); // Edge color
+        FragColor = vec4(0.3f, 0.3f, 0.4f, 0.5f); // Base Edge color
+    } else if (uRenderMode == 2) {
+        FragColor = vec4(1.0f, 0.8f, 0.0f, 1.0f); // Path Line: Gold
     } else {
         int state = int(vState);
         if (state == 0)      FragColor = vec4(0.6f, 0.6f, 0.6f, 1.0f); // Unvisited: Gray
-        else if (state == 1) FragColor = vec4(0.0f, 0.4f, 0.0f, 1.0f); // Frontier: Dark Green
+        else if (state == 1) FragColor = vec4(1.0f, 1.0f, 1.0f, 1.0f); // Visited: White
         else if (state == 2) FragColor = vec4(0.5f, 0.8f, 1.0f, 1.0f); // Reached: Light Blue
-        else if (state == 3) FragColor = vec4(0.5f, 1.0f, 0.5f, 1.0f); // Expanding: Light Green
-        else if (state == 4) FragColor = vec4(1.0f, 0.0f, 0.0f, 1.0f); // Closed: Dark Gray
+        else if (state == 3) FragColor = vec4(0.0f, 0.4f, 0.0f, 1.0f); // Frontier: Dark Green
+        else if (state == 4) FragColor = vec4(0.0f, 0.8f, 0.0f, 1.0f); // Expanding: Green
         else if (state == 5) FragColor = vec4(1.0f, 0.8f, 0.0f, 1.0f); // Path: Gold
         else if (state == 6) FragColor = vec4(1.0f, 0.0f, 0.0f, 1.0f); // Start Node: Red
         else if (state == 7) FragColor = vec4(1.0f, 0.0f, 1.0f, 1.0f); // End Node: Magenta
@@ -62,7 +65,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(1920, 1080, "Pathfinding Profiler", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(1080, 1080, "Pathfinding Profiler", NULL, NULL);
     glfwMakeContextCurrent(window);
     gladLoadGL(glfwGetProcAddress);
     
@@ -83,16 +86,17 @@ int main() {
     glAttachShader(shaderProgram, fs);
     glLinkProgram(shaderProgram);
 
-    // Context Data
     int inputPointCount = 100;
     std::vector<Vertex> points = generateRandomPoints(inputPointCount);
     std::vector<int> edges;
+    std::vector<int> pathIndices; // Stores the sequence of vertices for the final path line
     Graph graph;
 
-    GLuint VAO, VBO, EBO;
+    GLuint VAO, VBO, EBO, pathEBO;
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
     glGenBuffers(1, &EBO);
+    glGenBuffers(1, &pathEBO); // New EBO specifically for the path line
 
     glBindVertexArray(VAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
@@ -101,21 +105,24 @@ int main() {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
     glBindVertexArray(0);
 
     GLint renderModeLoc = glGetUniformLocation(shaderProgram, "uRenderMode");
 
-    // UI & Playback States
     int startNode = -1;
     int endNode = -1;
     bool mouseLeftPressed = false;
     bool mouseRightPressed = false;
+    
     int currentAlgo = 0;
-    const char* algos[] = { "Dijkstra", "A* (Euclidean)" };
+    const char* algos[] = { 
+        "Dijkstra", "BFS", "DFS", "A* (Euclidean)", 
+        "Greedy Best-First", "Hill Climbing", "IDA*" 
+    };
 
-    // Asynchronous Execution Variables
     PathfindingHistory activeResult;
     bool isPlaying = false;
     int playbackStep = 0;
@@ -168,13 +175,14 @@ int main() {
                         if (startNode != -1 && startNode != endNode) points[startNode].state = 0.0f;
                         if (closestIndex == endNode) endNode = -1;
                         startNode = closestIndex;
-                        points[startNode].state = 6.0f; // Start: Red
+                        points[startNode].state = 6.0f;
                     } else if (currentRight) {
                         if (endNode != -1 && endNode != startNode) points[endNode].state = 0.0f;
                         if (closestIndex == startNode) startNode = -1;
                         endNode = closestIndex;
-                        points[endNode].state = 7.0f; // End: Magenta
+                        points[endNode].state = 7.0f;
                     }
+                    pathIndices.clear(); // Clear path overlay if endpoints change
                     glBindBuffer(GL_ARRAY_BUFFER, VBO);
                     glBufferSubData(GL_ARRAY_BUFFER, 0, points.size() * sizeof(Vertex), points.data());
                 }
@@ -189,15 +197,12 @@ int main() {
             if (playbackTimer >= stepDelay) {
                 playbackTimer = 0.0f;
 
-                // Close the previously expanded node (skip if it's the start/end point)
                 if (lastExpandedNode != -1 && lastExpandedNode != startNode && lastExpandedNode != endNode) {
-                    points[lastExpandedNode].state = static_cast<float>(NodeState::CLOSED);
+                    points[lastExpandedNode].state = static_cast<float>(NodeState::REACHED);
                 }
 
-                // Apply deltas for the current queue pop
                 const auto& step = activeResult.steps[playbackStep];
                 for (const auto& delta : step.deltas) {
-                    // Do not overwrite the Start/End highlights
                     if (delta.nodeIndex != startNode && delta.nodeIndex != endNode) {
                         points[delta.nodeIndex].state = static_cast<float>(delta.newState);
                     }
@@ -210,15 +215,21 @@ int main() {
                 if (playbackStep == activeResult.steps.size()) {
                     isPlaying = false;
                     if (activeResult.pathFound) {
+                        // 1. Color the nodes
                         for (int n : activeResult.finalPath) {
                             if (n != startNode && n != endNode) {
                                 points[n].state = static_cast<float>(NodeState::PATH);
                             }
                         }
+                        
+                        // 2. Upload the edge sequence to the secondary EBO for line rendering
+                        pathIndices = activeResult.finalPath;
+                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, pathEBO);
+                        glBufferData(GL_ELEMENT_ARRAY_BUFFER, pathIndices.size() * sizeof(int), pathIndices.data(), GL_DYNAMIC_DRAW);
+                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO); // Restore main EBO binding safely
                     }
                 }
                 
-                // Stream new visual states to GPU
                 glBindBuffer(GL_ARRAY_BUFFER, VBO);
                 glBufferSubData(GL_ARRAY_BUFFER, 0, points.size() * sizeof(Vertex), points.data());
             }
@@ -235,6 +246,7 @@ int main() {
         if (ImGui::Button("Generate Points")) {
             points = generateRandomPoints(inputPointCount);
             edges.clear();
+            pathIndices.clear();
             startNode = -1; endNode = -1;
             isPlaying = false;
             
@@ -245,6 +257,7 @@ int main() {
         if (ImGui::Button("Generate Triangulation")) {
             for(auto& p : points) p.state = 0.0f;
             edges = bowyerWatson(points);
+            pathIndices.clear();
             
             if (startNode != -1) points[startNode].state = 6.0f;
             if (endNode != -1) points[endNode].state = 7.0f;
@@ -256,27 +269,42 @@ int main() {
         }
 
         ImGui::Separator();
-        ImGui::Combo("Algorithm", &currentAlgo, algos, 2);
+        ImGui::Combo("Algorithm", &currentAlgo, algos, IM_ARRAYSIZE(algos));
         ImGui::SliderFloat("Speed (s)", &stepDelay, 0.01f, 0.5f);
         
-        // 1. Evaluate the condition ONCE and store it
         bool disableRunButton = (startNode == -1 || endNode == -1 || edges.empty() || isPlaying);
-        
-        // 2. Use the stored boolean to begin
         if (disableRunButton) ImGui::BeginDisabled();
         
         if (ImGui::Button("Run Algorithm")) {
-            // Reset state space (except start/end)
             for(size_t i = 0; i < points.size(); ++i) points[i].state = 0.0f;
             points[startNode].state = 6.0f; 
             points[endNode].state = 7.0f;
+            pathIndices.clear(); // Clear old path
             
-            // Build adjacency list & Run Algorithm entirely on the CPU
             graph.buildFromTopology(points, edges, points.size());
-            activeResult = runDijkstra(graph, startNode, endNode);
+
+            std::vector<float> h(points.size(), 0.0f);
+            if (currentAlgo >= 3) {
+                float targetX = points[endNode].x;
+                float targetY = points[endNode].y;
+                for (size_t i = 0; i < points.size(); ++i) {
+                    float dx = points[i].x - targetX;
+                    float dy = points[i].y - targetY;
+                    h[i] = std::sqrt(dx * dx + dy * dy);
+                }
+            }
+
+            switch (currentAlgo) {
+                case 0: activeResult = runDijkstra(graph, startNode, endNode); break;
+                case 1: activeResult = runBFS(graph, startNode, endNode); break;
+                case 2: activeResult = runDFS(graph, startNode, endNode); break;
+                case 3: activeResult = runAStar(graph, startNode, endNode, h); break;
+                case 4: activeResult = runGreedy(graph, startNode, endNode, h); break;
+                case 5: activeResult = runHillClimbing(graph, startNode, endNode, h); break;
+                case 6: activeResult = runIDAStar(graph, startNode, endNode, h); break;
+            }
             
-            // Trigger rendering playback
-            isPlaying = true; // This no longer causes a crash
+            isPlaying = true; 
             playbackStep = 0;
             playbackTimer = 0.0f;
             lastExpandedNode = -1;
@@ -285,15 +313,18 @@ int main() {
             glBufferSubData(GL_ARRAY_BUFFER, 0, points.size() * sizeof(Vertex), points.data());
         }
         
-        // 3. Use the EXACT SAME stored boolean to end
         if (disableRunButton) ImGui::EndDisabled();
 
-        // Metrics output (only shows after playback finishes)
         if (!isPlaying && activeResult.executionTimeMicroseconds > 0) {
             ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Execution Complete");
-            ImGui::Text("CPU Time: %lld µs", activeResult.executionTimeMicroseconds);
-            ImGui::Text("Total Cost: %.2f", activeResult.totalCost);
+            if (activeResult.pathFound) {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Execution Complete");
+                ImGui::Text("CPU Time: %lld µs", activeResult.executionTimeMicroseconds);
+                ImGui::Text("Total Cost: %.2f", activeResult.totalCost);
+                ImGui::Text("Path Length: %zu nodes", activeResult.finalPath.size());
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "No Path Found!");
+            }
         }
 
         ImGui::End();
@@ -304,11 +335,24 @@ int main() {
         glUseProgram(shaderProgram);
         glBindVertexArray(VAO);
 
+        // A. Draw Full Graph Topology
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO); // Ensure base topology EBO is bound
         if (!edges.empty()) {
             glUniform1i(renderModeLoc, 1);
             glDrawElements(GL_LINES, edges.size(), GL_UNSIGNED_INT, 0);
         }
 
+        // B. Draw Found Path Line Overlay (If exists)
+        if (!isPlaying && !pathIndices.empty()) {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, pathEBO); // Switch to specific Path EBO
+            glUniform1i(renderModeLoc, 2);
+            glLineWidth(4.0f); // Make path line thicker (supported by most drivers)
+            glDrawElements(GL_LINE_STRIP, pathIndices.size(), GL_UNSIGNED_INT, 0);
+            glLineWidth(1.0f);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO); // Restore binding
+        }
+
+        // C. Draw Nodes
         glUniform1i(renderModeLoc, 0);
         glDrawArrays(GL_POINTS, 0, points.size());
 
@@ -318,6 +362,16 @@ int main() {
         glfwSwapBuffers(window);
     }
 
-    // Cleanup omitted
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+
+    glDeleteVertexArrays(1, &VAO);
+    glDeleteBuffers(1, &VBO);
+    glDeleteBuffers(1, &EBO);
+    glDeleteBuffers(1, &pathEBO);
+    glDeleteProgram(shaderProgram);
+
+    glfwTerminate();
     return 0;
 }

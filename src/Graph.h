@@ -7,12 +7,12 @@ using namespace std;
 
 // Visual states for the shader
 enum class NodeState : uint8_t {
-    UNVISITED = 0,
-    FRONTIER  = 1,
-    REACHED   = 2,
-    EXPANDING = 3,
-    CLOSED    = 4,
-    PATH      = 5
+    UNVISITED = 0,// gray
+    VISITED   = 1,// white
+    REACHED   = 2,// light blue
+    FRONTIER  = 3,// dark green
+    EXPANDING = 4,// green
+    PATH      = 5// gold
 };
 
 // Represents an atomic change to a single vertex
@@ -44,10 +44,10 @@ struct EdgeData {
 };
 
 struct Graph {
-    std::vector<std::vector<EdgeData>> adjacencyList;
+    vector<vector<EdgeData>> adjacencyList;
 
-    // Updated to accept std::vector<Vertex>
-    void buildFromTopology(const std::vector<Vertex>& vertices, const std::vector<int>& edges, int vertexCount) {
+    // Updated to accept vector<Vertex>
+    void buildFromTopology(const vector<Vertex>& vertices, const vector<int>& edges, int vertexCount) {
         adjacencyList.clear();
         adjacencyList.resize(vertexCount);
 
@@ -58,7 +58,7 @@ struct Graph {
             // Precompute Euclidean distance
             float dx = vertices[u].x - vertices[v].x;
             float dy = vertices[u].y - vertices[v].y;
-            float weight = std::sqrt(dx * dx + dy * dy);
+            float weight = sqrt(dx * dx + dy * dy);
 
             adjacencyList[u].push_back({v, weight});
             adjacencyList[v].push_back({u, weight}); // Undirected
