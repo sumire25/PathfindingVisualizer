@@ -399,19 +399,21 @@ PathfindingHistory runHillClimbing(const Graph& graph, int startNode, int endNod
         int best_neighbor = -1;
         float best_g = 0.0f;
         float max_eval = -numeric_limits<float>::infinity();
-        float current_eval = -(current_g + h[current]);
+        float current_eval = -h[current];
 
         for (const EdgeData& edge : graph.adjacencyList[current]) {
             int v = edge.targetIndex;
             float next_g = current_g + edge.weight;
-            float eval = -(next_g + h[v]); 
+            
+            // Evaluate strictly based on moving closer to the goal
+            float eval = -h[v]; 
 
             step.deltas.push_back({v, NodeState::FRONTIER});
 
             if (eval > max_eval) {
                 max_eval = eval;
                 best_neighbor = v;
-                best_g = next_g;
+                best_g = next_g; // Still track g to calculate total cost later
             }
         }
         history.steps.push_back(step);
@@ -437,10 +439,16 @@ PathfindingHistory runHillClimbing(const Graph& graph, int startNode, int endNod
 
 float searchIDAStar(int node, float g, float threshold, int endNode, 
                     const vector<float>& h, const Graph& graph, 
-                    vector<int>& path, PathfindingHistory& history) {
+                    vector<int>& path, PathfindingHistory& history, 
+                    int currentDepth, int maxDepth, float epsilon) {
     
     float f = g + h[node];
+    
+    // Prune if f-cost exceeds threshold
     if (f > threshold) return f;
+    
+    // Prune if we exceed the maximum logical diameter of the graph
+    if (currentDepth > maxDepth) return numeric_limits<float>::infinity();
 
     ExpansionStep step;
     step.expandedNode = node;
@@ -453,24 +461,34 @@ float searchIDAStar(int node, float g, float threshold, int endNode,
     }
 
     float min_val = numeric_limits<float>::infinity();
+    
+    // Evaluate neighbors
     for (const EdgeData& edge : graph.adjacencyList[node]) {
         int v = edge.targetIndex;
         
-        // Prevent simple cycles within the current DFS branch
+        // STRICT IS-CYCLE CHECK: Only evaluate if 'v' is not currently in the recursion stack
         if (find(path.begin(), path.end(), v) == path.end()) {
             step.deltas.push_back({v, NodeState::FRONTIER});
         }
     }
     history.steps.push_back(step);
 
+    // Expand valid neighbors
     for (const EdgeData& edge : graph.adjacencyList[node]) {
         int v = edge.targetIndex;
+        
+        // Apply the IS-CYCLE check again before recursion
         if (find(path.begin(), path.end(), v) == path.end()) {
             path.push_back(v);
-            float temp = searchIDAStar(v, g + edge.weight, threshold, endNode, h, graph, path, history);
+            
+            float temp = searchIDAStar(v, g + edge.weight, threshold, endNode, 
+                                       h, graph, path, history, 
+                                       currentDepth + 1, maxDepth, epsilon);
+            
             if (temp == -1.0f) return -1.0f;
             if (temp < min_val) min_val = temp;
-            path.pop_back();
+            
+            path.pop_back(); // Backtrack
         }
     }
     return min_val;
@@ -485,17 +503,28 @@ PathfindingHistory runIDAStar(const Graph& graph, int startNode, int endNode, co
 
     float threshold = h[startNode];
     vector<int> path = {startNode};
+    
+    // The theoretical maximum diameter for n points is n
+    int maxDepth = n; 
+    
+    // Epsilon to prevent float thrashing in continuous U(-0.9, 0.9) space
+    // Adjust this value based on desired precision vs performance tradeoff
+    float epsilon = 0.2f; 
 
     while (!history.pathFound) {
-        float temp = searchIDAStar(startNode, 0.0f, threshold, endNode, h, graph, path, history);
+        float temp = searchIDAStar(startNode, 0.0f, threshold, endNode, 
+                                   h, graph, path, history, 
+                                   1, maxDepth, epsilon);
         
         if (temp == -1.0f) { // Found
             break; 
         }
-        if (temp == numeric_limits<float>::infinity()) { // No path exists
+        if (temp == numeric_limits<float>::infinity()) { // Exhausted all paths up to maxDepth
             break;
         }
-        threshold = temp;
+        
+        // Force the threshold to advance by at least epsilon
+        threshold = max(temp, threshold + epsilon); 
     }
 
     auto endTime = chrono::high_resolution_clock::now();
@@ -503,18 +532,17 @@ PathfindingHistory runIDAStar(const Graph& graph, int startNode, int endNode, co
 
     if (history.pathFound) {
         history.finalPath = path;
-    }
-    // --- NEW: Calculate True Total Cost ---
-    history.totalCost = 0.0f;
-    for (size_t i = 0; i < history.finalPath.size() - 1; ++i) {
-        int u = history.finalPath[i];
-        int v = history.finalPath[i + 1];
         
-        // Find the edge weight between u and v
-        for (const EdgeData& edge : graph.adjacencyList[u]) {
-            if (edge.targetIndex == v) {
-                history.totalCost += edge.weight;
-                break;
+        // Calculate true cost based on Euclidean edge weights
+        history.totalCost = 0.0f;
+        for (size_t i = 0; i < history.finalPath.size() - 1; ++i) {
+            int u = history.finalPath[i];
+            int v = history.finalPath[i + 1];
+            for (const EdgeData& edge : graph.adjacencyList[u]) {
+                if (edge.targetIndex == v) {
+                    history.totalCost += edge.weight;
+                    break;
+                }
             }
         }
     }
